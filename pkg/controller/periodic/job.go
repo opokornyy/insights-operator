@@ -83,7 +83,7 @@ func (j *JobController) CreateGathererJob(
 							Name:  "insights-gathering",
 							Image: image,
 							Args: []string{
-								"gather-and-upload", "-v=4", "--config=/etc/insights-operator/server.yaml", "--storagePath", volumeMounts[0].MountPath,
+								"gather-and-upload", "-v=4", "--config=/etc/insights-operator/server.yaml",
 							},
 							Env: []corev1.EnvVar{
 								{
