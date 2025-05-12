@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Pod
+metadata:
+  name: access-pod-test
+  namespace: openshift-insights
+spec:
+  containers:
+    - name: access-pod
+      image: registry.redhat.io/ubi8/ubi-minimal
+      command: ["/bin/sh", "-c", "sleep infinity"] # Keeps the container alive
+      volumeMounts:
+        - name: data
+          mountPath: /data
+  volumes:
+    - name: data
+      persistentVolumeClaim:
+        claimName: on-demand-gather-pvc

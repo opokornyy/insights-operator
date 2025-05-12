@@ -1,0 +1,8 @@
+spec:
+  gatherConfig:
+    storage:
+      persistentVolume:
+        claim:
+          name: on-demand-gather-pvc
+        mountPath: /data
+      type: PersistentVolume
