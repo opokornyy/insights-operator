@@ -83,9 +83,9 @@ func (r *Recorder) Record(rec record.Record) (errs []error) {
 		At:          at,
 		Data:        data,
 	}
-	if r.anonymizer.IsObfuscationEnabled() {
-		memoryRecord = r.anonymizer.AnonymizeMemoryRecord(memoryRecord)
-	}
+
+	// Run each obfuscation methods here - both network and workload
+	memoryRecord = r.anonymizer.AnonymizeMemoryRecord(memoryRecord)
 
 	// we want to record the "priority" files (with AlwaysStore=true) everytime regardless the archive size limit
 	if r.size+recordSize > r.maxArchiveSize && !rec.AlwaysStored {
