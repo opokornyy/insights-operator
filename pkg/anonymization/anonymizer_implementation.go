@@ -44,6 +44,7 @@ func (wa *WorkloadAnonymizer) anonymizeData(memoryRecord *record.MemoryRecord) {
 	err := json.Unmarshal(memoryRecord.Data, &jsonData)
 	if err != nil {
 		klog.Errorf("unmarshal error: %e", err)
+		return
 	}
 
 	// Remove the keys that should be anonymized
