@@ -79,10 +79,23 @@ type subnetInformation struct {
 	lastIP  net.IP
 }
 
+// This is the shared interface that the specific anonymizer needs to implement
+type DataAnonymization interface {
+	anonymizeData(*record.MemoryRecord)
+	// This function should tell us if the obfuscation was configured or not
+	isEnabled() bool
+}
+
+// TODO:
+//  1. remove the IP anonymization specific code from this package
+//  2. use anonymizer as an interface to run multiple other obfuscation methods
+//  3. AnonymizeMemoryRecord should be used to run all the obfuscation methods
+//
 // Anonymizer is used to anonymize sensitive data.
 // Config can be used to enable anonymization of cluster base domain
 // and obfuscation of IPv4 addresses
 type Anonymizer struct {
+	// Most of these fields could be moved to the NetworkAnonymizer
 	sensitiveValues  map[string]string
 	networks         []subnetInformation
 	translationTable map[string]string
@@ -94,6 +107,9 @@ type Anonymizer struct {
 	networkClient    networkv1client.NetworkV1Interface
 	gatherKubeClient kubernetes.Interface
 	runningInCluster bool
+
+	// This should contain the anonymization structs
+	anonymizers []DataAnonymization
 }
 
 type ConfigProvider interface {
@@ -119,7 +135,8 @@ func NewAnonymizerFromConfigClient(
 		WithKubeClient(gatherKubeClient).
 		WithNetworkClient(networkClient).
 		WithRunningInCluster(true).
-		WithSecretsClient(kubeClient.CoreV1().Secrets(secretNamespace))
+		WithSecretsClient(kubeClient.CoreV1().Secrets(secretNamespace)).
+		WithAnonymizer()
 
 	for value, placeholder := range sensitiveVals {
 		anonBuilder.WithSensitiveValue(value, placeholder)
@@ -337,8 +354,18 @@ func NewAnonymizerFromConfig(
 	)
 }
 
+// This is the required method, where we should run all the obfuscation/anonymization IMO
 // AnonymizeMemoryRecord takes record.MemoryRecord, removes the sensitive data from it and returns the same object
 func (anonymizer *Anonymizer) AnonymizeMemoryRecord(memoryRecord *record.MemoryRecord) *record.MemoryRecord {
+	// Check if the anonymization should run
+	// Run each anonymization instead of only network anonymization
+	for _, specificAnonymizer := range anonymizer.anonymizers {
+		// Anonymize data if enabled by configuration
+		if specificAnonymizer.isEnabled() {
+			specificAnonymizer.anonymizeData(memoryRecord)
+		}
+	}
+
 	// lazy init of network information
 	once.Do(func() {
 		err := anonymizer.readNetworkConfigs()
