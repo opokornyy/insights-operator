@@ -624,3 +624,143 @@ func TestAddAPIDomainsForAnonymization(t *testing.T) {
 		})
 	}
 }
+
+// --- Additional tests appended to expand coverage for domain parsing, API domain mapping, and anonymizer behavior. ---
+// Note: Uses Go's testing package and Testify's assert library, consistent with existing tests.
+
+func TestAddParsedDomainToMap_AdditionalCases(t *testing.T) {
+	tests := []struct {
+		name        string
+		address     string
+		placeholder string
+		expectedKey string
+		expectError bool
+	}{
+		{
+			name:        "URL with path and query",
+			address:     "https://api.example.com:6443/path?x=1&y=2",
+			placeholder: "<CLUSTER_HOST>",
+			expectedKey: "api.example.com",
+			expectError: false,
+		},
+		{
+			name:        "IPv6 with scheme and port",
+			address:     "https://[2001:db8::1]:6443",
+			placeholder: "<CLUSTER_HOST>",
+			expectedKey: "2001:db8::1",
+			expectError: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domainMap := make(map[string]string)
+			err := addParsedDomainToMap(tt.address, domainMap, tt.placeholder)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Len(t, domainMap, 1)
+			assert.Equal(t, tt.placeholder, domainMap[tt.expectedKey])
+		})
+	}
+}
+
+func TestAddAPIDomainsForAnonymization_AdditionalCases(t *testing.T) {
+	tests := []struct {
+		name            string
+		clientHosts     []string
+		infrastructure  *configv1.Infrastructure
+		expectedDomains map[string]string
+		expectError     bool
+	}{
+		{
+			name:        "invalid infrastructure APIServerURL returns error",
+			clientHosts: []string{},
+			infrastructure: &configv1.Infrastructure{
+				Status: configv1.InfrastructureStatus{
+					APIServerURL: "ht\ttp://bad",
+				},
+			},
+			expectedDomains: map[string]string{},
+			expectError:     true,
+		},
+		{
+			name:        "IPv6 APIServerURL is parsed and added",
+			clientHosts: []string{},
+			infrastructure: &configv1.Infrastructure{
+				Status: configv1.InfrastructureStatus{
+					APIServerURL: "https://[2001:db8::10]:6443",
+				},
+			},
+			expectedDomains: map[string]string{
+				"2001:db8::10": ClusterHostPlaceholder,
+			},
+			expectError: false,
+		},
+		{
+			name:        "duplicate client hosts are de-duplicated",
+			clientHosts: []string{"host1.example.com", "host1.example.com"},
+			infrastructure: nil,
+			expectedDomains: map[string]string{
+				"host1.example.com": ClusterHostPlaceholder,
+			},
+			expectError: false,
+		},
+		{
+			name:        "mixed valid and invalid client hosts returns error",
+			clientHosts: []string{"host1.example.com", "ht\ttp://invalid"},
+			infrastructure: nil,
+			expectedDomains: map[string]string{},
+			expectError:     true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			domainMap := make(map[string]string)
+			err := addAPIDomainsForAnonymization(tt.clientHosts, tt.infrastructure, domainMap)
+
+			if tt.expectError {
+				assert.Error(t, err)
+				return
+			}
+
+			assert.NoError(t, err)
+			assert.Equal(t, len(tt.expectedDomains), len(domainMap))
+			for expectedKey, expectedValue := range tt.expectedDomains {
+				assert.Equal(t, expectedValue, domainMap[expectedKey], "Domain %s should map to %s", expectedKey, expectedValue)
+			}
+		})
+	}
+}
+
+func Test_Anonymizer_ConsistencyForRepeatedIPs(t *testing.T) {
+	anonymizer := getAnonymizer(t)
+
+	// Same IP appearing twice in the same record should be obfuscated to the same value.
+	before := "192.168.1.5 192.168.1.5"
+	after := string(anonymizer.AnonymizeMemoryRecord(&record.MemoryRecord{
+		Data: []byte(before),
+	}).Data)
+
+	var first, second string
+	_, err := fmt.Sscanf(after, "%s %s", &first, &second)
+	assert.NoError(t, err, "failed to parse obfuscated output: %q", after)
+	assert.Equal(t, first, second, "repeated IPs should map consistently to the same obfuscated IP")
+	assert.NotEqual(t, "192.168.1.5", first, "obfuscated IP should differ from the original")
+}
+
+func Test_Anonymizer_UnknownNetworkIPMappedToZero(t *testing.T) {
+	anonymizer := getAnonymizer(t)
+
+	// IP not belonging to configured networks should map to 0.0.0.0
+	obfuscated := string(anonymizer.AnonymizeMemoryRecord(&record.MemoryRecord{
+		Data: []byte("10.0.0.1"),
+	}).Data)
+
+	assert.Equal(t, "0.0.0.0", obfuscated)
+}
