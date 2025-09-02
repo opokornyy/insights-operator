@@ -150,7 +150,9 @@ func UpdateProgressingCondition(ctx context.Context,
 	case GatheringFailedReason:
 		dataGatherCR.Status.FinishTime = ptr.To(metav1.Now())
 	case GatheringReason:
-		dataGatherCR.Status.StartTime = ptr.To(metav1.Now())
+		if dataGatherCR.Status.StartTime == nil {
+			dataGatherCR.Status.StartTime = ptr.To(metav1.Now())
+		}
 	case DataGatheringPendingReason:
 		// no op
 	}

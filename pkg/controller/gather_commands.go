@@ -160,7 +160,7 @@ func (g *GatherJob) GatherAndUpload(kubeConfig, protoKubeConfig *rest.Config) er
 	defer cancel()
 	dataGatherCR, err := insightsV1alpha2Cli.DataGathers().Get(ctx, os.Getenv("DATAGATHER_NAME"), metav1.GetOptions{})
 	if err != nil {
-		klog.Errorf("failed to get coresponding DataGather custom resource: %v", err)
+		klog.Errorf("failed to get corresponding DataGather custom resource: %v", err)
 		return err
 	}
 

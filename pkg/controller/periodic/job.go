@@ -136,7 +136,7 @@ func (j *JobController) WaitForJobCompletion(ctx context.Context, job *batchv1.J
 			}
 
 			if event.Type == apiWatch.Deleted {
-				return nil
+				return fmt.Errorf("job '%s' deleted: %w", job.Name, ErrJobFailed)
 			}
 
 			if event.Type != apiWatch.Modified {
