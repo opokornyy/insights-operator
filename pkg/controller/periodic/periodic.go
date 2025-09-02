@@ -409,10 +409,20 @@ func (c *Controller) runJobAndCheckResults(ctx context.Context, dataGather *insi
 	if err != nil {
 		if errors.Is(err, context.DeadlineExceeded) {
 			klog.Errorf("Failed to read job status: %v", err)
-			return
 		}
-		klog.Error(err)
+
+		if errors.Is(err, ErrJobFailed) {
+			klog.Errorf("DataGather %s: %v", dataGather.Name, err)
+		}
+
+		_, err = status.UpdateProgressingCondition(ctx, c.dataGatherClient, nil, dataGather.Name, status.GatheringFailedReason)
+		if err != nil {
+			klog.Errorf("failed to update coresponding DataGather custom resource: %v", err)
+		}
+
+		return
 	}
+
 	klog.Infof("Job completed %s", gj.Name)
 	dataGatherFinished, err := c.dataGatherClient.DataGathers().Get(ctx, dataGather.Name, metav1.GetOptions{})
 	if err != nil {

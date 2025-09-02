@@ -2,6 +2,7 @@ package periodic
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 
@@ -18,6 +19,8 @@ import (
 	"k8s.io/klog/v2"
 	"k8s.io/utils/ptr"
 )
+
+var ErrJobFailed = errors.New("job failed")
 
 // JobController type responsible for
 // creating a new gathering jobs
@@ -148,7 +151,7 @@ func (j *JobController) WaitForJobCompletion(ctx context.Context, job *batchv1.J
 				return nil
 			}
 			if job.Status.Failed > 0 {
-				return fmt.Errorf("job %s failed", job.Name)
+				return fmt.Errorf("checking status for job '%s': %w", job.Name, ErrJobFailed)
 			}
 		}
 	}
