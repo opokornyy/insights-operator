@@ -407,12 +407,23 @@ func (c *Controller) runJobAndCheckResults(ctx context.Context, dataGather *insi
 	klog.Infof("Created new gathering job %v", gj.Name)
 	err = c.jobController.WaitForJobCompletion(ctx, gj)
 	if err != nil {
-		if errors.Is(err, context.DeadlineExceeded) {
+		switch {
+		case errors.Is(err, context.DeadlineExceeded):
 			klog.Errorf("Failed to read job status: %v", err)
-			return
+		case errors.Is(err, ErrJobFailed):
+			klog.Errorf("DataGather %s: %v", dataGather.Name, err)
+		default:
+			klog.Errorf("Job %s ended with error: %v", gj.Name, err)
 		}
-		klog.Error(err)
+
+		_, err = status.UpdateProgressingCondition(ctx, c.dataGatherClient, nil, dataGather.Name, status.GatheringFailedReason)
+		if err != nil {
+			klog.Errorf("failed to update corresponding DataGather custom resource: %v", err)
+		}
+
+		return
 	}
+
 	klog.Infof("Job completed %s", gj.Name)
 	dataGatherFinished, err := c.dataGatherClient.DataGathers().Get(ctx, dataGather.Name, metav1.GetOptions{})
 	if err != nil {
