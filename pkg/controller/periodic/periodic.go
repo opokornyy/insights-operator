@@ -5,11 +5,14 @@ import (
 	"errors"
 	"fmt"
 	"reflect"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -304,15 +307,108 @@ func (c *Controller) periodicTrigger(stopCh <-chan struct{}) {
 	}
 }
 
+const gatheringLimit = 3
+
+// TODO: consider renaming
+type gatheringCounter struct {
+	counter int
+	mu      sync.Mutex
+}
+
 // onDemandGather listens to newly created DataGather resources and checks
 // the state of each resource. If the state is not an empty string, it means that
 // the corresponding job is already running or has been started and new data gathering
 // is not triggered.
 func (c *Controller) onDemandGather(stopCh <-chan struct{}) {
+	// Cache is not synced immediately, so we need to call api instead of only using informers
+	// TODO: Otherwise we would need to wait for that WaitForSync ~ there is a func for that
+	// that would need to be added to the interface
+	initialDataGatherList, err := c.dataGatherClient.DataGathers().List(context.TODO(), metav1.ListOptions{})
+	if err != nil {
+		klog.Errorf("Failed listing datagathers: %v", err)
+	}
+	klog.Infof("onDemandGather: dataGatherList: %v", initialDataGatherList)
+
+	runningCounter := countOnDemandJobs(initialDataGatherList)
+	klog.Infof("onDemandGather: initial runningCounter: %d", runningCounter)
+
+	gc := &gatheringCounter{
+		counter: runningCounter,
+	}
+
 	for {
 		select {
 		case <-stopCh:
 			return
+		case dgUpdatedName := <-c.dgInf.DatagaGatherStatusChanged():
+			// Check if there are some jobs waiting to be triggered
+			// after some of the jobs has finished
+			go func() {
+				klog.Info("DataGatherStatusChaged triggered")
+
+				gc.mu.Lock()
+				klog.Infof("DatagaGatherStatusChanged: Gathering: counter: %d", gc.counter)
+
+				// List not started DataGather and run it + incrementet counter
+				dgList, err := c.dgInf.Lister().List(labels.Everything())
+				if err != nil {
+					klog.Errorf("Failed listing datagathers: %v", err)
+				}
+
+				var dgNotStarted *insightsv1alpha2.DataGather
+				for _, dataGather := range dgList {
+					// filter out dataGathers created for periodic gathering
+					// to block on on-demand gathering
+					if strings.HasPrefix(dataGather.GetName(), periodicGatheringPrefix) {
+						continue
+					}
+
+					gatheringCondition := status.GetConditionByType(dataGather, status.Progressing)
+
+					// Get not started DataGather
+					// TODO: use only one approach to check if gathering is running or not
+					if gatheringCondition == nil {
+						dgNotStarted = dataGather
+						continue
+					}
+
+					if dataGather.Name != dgUpdatedName {
+						continue
+					}
+
+					// Check if the DataGather has finished, if so decrement the counter
+					// Only decrement if the job is finished
+					finishedReasons := []string{status.GatheringSucceededReason, status.GatheringFailedReason}
+					if slices.Contains(finishedReasons, gatheringCondition.Reason) {
+						gc.counter--
+						klog.Infof("Job %s finished with reason %s, decremented counter to %d",
+							dgUpdatedName, gatheringCondition.Reason, gc.counter)
+					}
+				}
+
+				// TODO: what about adding these dataGathers to a slice and running more than one of the waiting datagathers
+				// if it is possible. To avoid running it one by one
+
+				// No dataGather to start
+				if dgNotStarted == nil {
+					gc.mu.Unlock()
+					return
+				}
+
+				// Shared code with the DataGatherCreated()
+				if gc.counter >= gatheringLimit {
+					klog.Infof("DatagaGatherStatusChanged: GatheringLimit reached: %d/%d", gc.counter, gatheringLimit)
+					gc.mu.Unlock()
+					return
+				}
+
+				// Increment the counter and run the job
+				gc.counter++
+				gc.mu.Unlock()
+
+				klog.Infof("DatagaGatherStatusChanged: Starting on-demand data gathering for the %s DataGather resource", dgNotStarted.Name)
+				c.runJobAndCheckResults(context.TODO(), dgNotStarted, c.image)
+			}()
 		case dgName := <-c.dgInf.DataGatherCreated():
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), c.configAggregator.Config().DataReporting.Interval*4)
@@ -323,11 +419,47 @@ func (c *Controller) onDemandGather(stopCh <-chan struct{}) {
 					return
 				}
 
-				klog.Infof("Starting on-demand data gathering for the %s DataGather resource", dgName)
+				gc.mu.Lock()
+				klog.Infof("DataGatherCreated: Gathering: counter: %d", gc.counter)
+
+				if gc.counter >= gatheringLimit {
+					klog.Infof("DataGatherCreated: GatheringLimit reached: %d/%d", gc.counter, gatheringLimit)
+					gc.mu.Unlock()
+					return
+				}
+
+				// Increment the counter and run the job
+				gc.counter++
+				gc.mu.Unlock()
+
+				klog.Infof("DataGatherCreated: Starting on-demand data gathering for the %s DataGather resource", dgName)
 				c.runJobAndCheckResults(ctx, dataGather, c.image)
 			}()
 		}
 	}
+}
+
+func countOnDemandJobs(initialDataGatherList *insightsv1alpha2.DataGatherList) int {
+	runningCounter := 0
+	for i := range initialDataGatherList.Items {
+		klog.Infof("onDemandGather: dataGather: %s", initialDataGatherList.Items[i].Name)
+
+		// filter out dataGathers created for periodic gathering
+		// to block on on-demand gathering
+		if strings.HasPrefix(initialDataGatherList.Items[i].GetName(), periodicGatheringPrefix) {
+			continue
+		}
+
+		gatheringCondition := status.GetConditionByType(&initialDataGatherList.Items[i], status.Progressing)
+		klog.Infof("onDemandGather: gatherCondition: %v", gatheringCondition)
+
+		// Check if gathering is running
+		if gatheringCondition != nil && gatheringCondition.Status == metav1.ConditionTrue {
+			runningCounter++
+		}
+	}
+
+	return runningCounter
 }
 
 func (c *Controller) prepareDataGatherCRWithImage(ctx context.Context, dgName string) (*insightsv1alpha2.DataGather, error) {
@@ -752,6 +884,11 @@ func (c *Controller) createNewDataGatherCR(ctx context.Context) (*insightsv1alph
 	dataGatherCR := insightsv1alpha2.DataGather{
 		ObjectMeta: metav1.ObjectMeta{
 			GenerateName: periodicGatheringPrefix,
+			// Based on this we could filter the CRs in the informers
+			// and we would not need to rely on the names
+			Labels: map[string]string{
+				"data-gathering/type": "periodic",
+			},
 		},
 		Spec: insightsv1alpha2.DataGatherSpec{
 			DataPolicy: dataPolicy,
