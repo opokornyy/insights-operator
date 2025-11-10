@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"k8s.io/apimachinery/pkg/labels"
 	utilruntime "k8s.io/apimachinery/pkg/util/runtime"
 	"k8s.io/apimachinery/pkg/util/wait"
 	"k8s.io/client-go/kubernetes"
@@ -304,6 +305,8 @@ func (c *Controller) periodicTrigger(stopCh <-chan struct{}) {
 	}
 }
 
+const gatheringLimit = 3
+
 // onDemandGather listens to newly created DataGather resources and checks
 // the state of each resource. If the state is not an empty string, it means that
 // the corresponding job is already running or has been started and new data gathering
@@ -313,6 +316,58 @@ func (c *Controller) onDemandGather(stopCh <-chan struct{}) {
 		select {
 		case <-stopCh:
 			return
+		case <-c.dgInf.DatagaGatherStatusChanged():
+			// Check if there are some jobs waiting to be triggered
+			// after some of the jobs has finished
+			go func() {
+				klog.Info("DataGatherStatusChaged triggered")
+				dgList, err := c.dgInf.Lister().List(labels.Everything())
+				if err != nil {
+					klog.Errorf("Failed listing datagathers: %v", err)
+				}
+
+				var dgNotStarted *insightsv1alpha2.DataGather
+				runningCounter := 0
+				for _, dataGather := range dgList {
+					// filter out dataGathers created for periodic gathering
+					// we should not block the periodic gathering imo
+					// we are limiting it already with a inteval minimum
+					if strings.HasPrefix(dataGather.GetName(), periodicGatheringPrefix) {
+						continue
+					}
+
+					gatheringCondition := status.GetConditionByType(dataGather, status.Progressing)
+					if gatheringCondition == nil && dgNotStarted == nil {
+						// This could mean that the gathering is not started
+						klog.Infof("GatheringReason condition is nil")
+						dgNotStarted = dataGather
+						continue
+					}
+
+					// No datagather selected for starting yet
+					if dgNotStarted == nil && gatheringCondition.Reason == status.DataGatheringPendingReason {
+						dgNotStarted = dataGather
+					}
+
+					// Gathering is running
+					// TODO: use only one approach to check if gathering is running
+					if gatheringCondition != nil && gatheringCondition.Status == metav1.ConditionTrue {
+						runningCounter++
+					}
+				}
+
+				if runningCounter >= gatheringLimit {
+					klog.Infof("GatheringLimit reached: %d/%d", runningCounter, gatheringLimit)
+					return
+				}
+
+				// TODO: what about adding these dataGathers to a slice and running more than one of the waiting datagathers
+				// if it is possible. If there would be a big queue it would be run one by one
+				if dgNotStarted != nil {
+					klog.Infof("Starting on-demand data gathering for the %s DataGather resource", dgNotStarted.Name)
+					c.runJobAndCheckResults(context.TODO(), dgNotStarted, c.image)
+				}
+			}()
 		case dgName := <-c.dgInf.DataGatherCreated():
 			go func() {
 				ctx, cancel := context.WithTimeout(context.Background(), c.configAggregator.Config().DataReporting.Interval*4)
@@ -322,6 +377,46 @@ func (c *Controller) onDemandGather(stopCh <-chan struct{}) {
 				if err != nil {
 					return
 				}
+
+				dgLister := c.dgInf.Lister()
+				dataGatherList, err := dgLister.List(labels.Everything())
+				if err != nil {
+					klog.Error("Failed to list datagathers")
+				}
+
+				runningCounter := 0
+				for _, dg := range dataGatherList {
+					// avoid limiting periodic gathering
+					if strings.HasPrefix(dg.Name, periodicGatheringPrefix) {
+						continue
+					}
+
+					progressingConditions := status.GetConditionByType(dg, status.Progressing)
+					if progressingConditions == nil {
+						continue
+					}
+
+					// Consider checking condition.Status == metav1.ConditionTrue
+					if progressingConditions.Reason == status.GatheringReason {
+						runningCounter += 1
+					}
+				}
+
+				klog.Infof("Created Gathering: counter: %d", runningCounter)
+
+				if runningCounter >= gatheringLimit {
+					klog.Infof("GatheringLimit reached: %d/%d", runningCounter, gatheringLimit)
+					return
+				}
+
+				// We would like to somehow count the datagathers here and avoid creating
+				// way too many jobs at once to avoid ddosing the processing api and eating up
+				// cluster resources
+				// What is the pod is restarted and there would be some DataGathers CRs that were not
+				// run yet?
+				// Run a go routine with a channel that will be reporting how many gatherings is running at the moment?
+				// Maybe an informer to list datagathers and filter them based on the status could be used
+				// to limit running multiple jobs at once
 
 				klog.Infof("Starting on-demand data gathering for the %s DataGather resource", dgName)
 				c.runJobAndCheckResults(ctx, dataGather, c.image)
@@ -336,6 +431,8 @@ func (c *Controller) prepareDataGatherCRWithImage(ctx context.Context, dgName st
 		klog.Errorf("Failed to read %s DataGather resource", dgName)
 		return nil, err
 	}
+
+	// TODO: here we are checking what should be run and what was already run
 
 	// Avoid running DataGathering for already run jobs
 	if len(dataGather.Status.Conditions) != 0 {
