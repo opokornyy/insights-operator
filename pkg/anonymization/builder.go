@@ -76,6 +76,20 @@ func (b *AnonBuilder) WithSecretsClient(client corev1client.SecretInterface) *An
 	return b
 }
 
+func (b *AnonBuilder) WithAnonymizer() *AnonBuilder {
+	// Create anonymizers
+	workloadAnonymizer := NewWorkloadAnonymizer()
+	networkAnonymizer := NewNetworkAnonymizer()
+
+	b.anon.anonymizers = []DataAnonymization{
+		workloadAnonymizer,
+		networkAnonymizer,
+		// Add other anonymizer implementations here
+	}
+
+	return b
+}
+
 func (b *AnonBuilder) Build() (*Anonymizer, error) {
 	cidrs, err := k8snet.ParseCIDRs(b.networks)
 	if err != nil {

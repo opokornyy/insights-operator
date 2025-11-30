@@ -65,8 +65,10 @@ func obfuscateArchive(path string) (string, error) {
 	anonBuilder := &anonymization.AnonBuilder{}
 	anonBuilder.
 		WithSensitiveValue(clusterBaseDomain, anonymization.ClusterBaseDomainPlaceholder).
+		// Workload obfuscation needs to be passed here as well
 		WithDataPolicies(v1alpha2.DataPolicyOptionObfuscateNetworking).
 		WithNetworks(networks)
+
 	anonymizer, err := anonBuilder.Build()
 	if err != nil {
 		return "", err
@@ -93,6 +95,8 @@ func obfuscateArchive(path string) (string, error) {
 			r.Data = metadataBytes
 		}
 
+		// Here we are executing the anonymization, make sure it is executed after all
+		// gathering function were run, so we can also obfuscate the DVO metrics as well here
 		anonymizedRecords = append(anonymizedRecords, *anonymizer.AnonymizeMemoryRecord(r))
 	}
 

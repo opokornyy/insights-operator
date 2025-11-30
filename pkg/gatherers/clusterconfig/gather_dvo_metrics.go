@@ -175,6 +175,9 @@ func gatherDVOMetricsFromEndpoint(
 	dvoMetricsPrefix := []byte("deployment_validation_operator_")
 
 	var f func(b []byte) []byte
+
+	// Here based on the configuration the data is obfuscated - we would need to
+	// move this functionality to the anonymization package
 	if useUIDs {
 		// precompile regex rules
 		regexString := `(?m)(,?%s=[^\,\}]*")`
