@@ -32,6 +32,66 @@ func createMockConfigMachine(ctx context.Context, c dynamic.Interface, data stri
 	return nil
 }
 
+func Test_getCRSize(t *testing.T) {
+	tests := []struct {
+		name          string
+		machineConfig *unstructured.Unstructured
+		expectedSize  int
+		expectError   bool
+	}{
+		{
+			name: "machine config with spec",
+			machineConfig: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"apiVersion": "machineconfiguration.openshift.io/v1",
+					"kind":       "MachineConfig",
+					"metadata": map[string]interface{}{
+						"name": "test-mc-with-spec",
+					},
+					"spec": map[string]interface{}{
+						"config": map[string]interface{}{
+							"ignition": map[string]interface{}{
+								"version": "3.2.0",
+							},
+						},
+					},
+				},
+			},
+			expectedSize: 178,
+			expectError:  false,
+		},
+		{
+			name:          "empty machine config",
+			machineConfig: &unstructured.Unstructured{},
+			expectedSize:  15,
+			expectError:   false,
+		},
+		{
+			name: "fails to marshall",
+			machineConfig: &unstructured.Unstructured{
+				Object: map[string]interface{}{
+					"invalid": make(chan int),
+				},
+			},
+			expectedSize: 0,
+			expectError:  true,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			size, err := getCRSize(*tt.machineConfig)
+
+			if tt.expectError {
+				assert.Error(t, err)
+			} else {
+				assert.NoError(t, err)
+			}
+			assert.Equal(t, tt.expectedSize, size)
+		})
+	}
+}
+
 func TestGatherMachineConfigs(t *testing.T) {
 	tests := []struct {
 		name                    string
@@ -48,10 +108,11 @@ func TestGatherMachineConfigs(t *testing.T) {
 		{
 			name: "one machine config which is in use",
 			machineConfigYAMLs: []string{
-				`apiVersion: machineconfiguration.openshift.io/v1 
-kind: MachineConfig 
-metadata: 
-  name: 75-worker-sap-data-intelligence`},
+				`apiVersion: machineconfiguration.openshift.io/v1
+kind: MachineConfig
+metadata:
+  name: 75-worker-sap-data-intelligence`,
+			},
 			inUseMachineConfigs:     sets.Set[string]{"75-worker-sap-data-intelligence": {}},
 			expectedNumberOfRecords: 2,
 		},
