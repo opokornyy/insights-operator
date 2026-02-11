@@ -52,6 +52,18 @@ func anonymizeInstallConfig(installConfig *installertypes.InstallConfig) *instal
 	// we don't use it
 	installConfig.BaseDomain = anonymize.String(installConfig.BaseDomain)
 
+	if installConfig.ControlPlane != nil {
+		anonymizeFencing(installConfig.ControlPlane.Fencing)
+	}
+
+	if installConfig.Arbiter != nil {
+		anonymizeFencing(installConfig.Arbiter.Fencing)
+	}
+
+	for i := range installConfig.Compute {
+		anonymizeFencing(installConfig.Compute[i].Fencing)
+	}
+
 	if installConfig.AWS != nil {
 		installConfig.AWS.Region = anonymize.String(installConfig.AWS.Region)
 	}
@@ -80,6 +92,23 @@ func anonymizeInstallConfig(installConfig *installertypes.InstallConfig) *instal
 	}
 
 	return installConfig
+}
+
+func anonymizeFencing(fencing *installertypes.Fencing) {
+	if fencing == nil {
+		return
+	}
+
+	for i := range fencing.Credentials {
+		cred := fencing.Credentials[i]
+		if cred == nil {
+			continue
+		}
+		cred.HostName = anonymize.String(cred.HostName)
+		cred.Username = anonymize.String(cred.Username)
+		cred.Password = anonymize.String(cred.Password)
+		cred.Address = anonymize.String(cred.Address)
+	}
 }
 
 func anonymizeVSphere(vspherePlatform *vsphere.Platform) {

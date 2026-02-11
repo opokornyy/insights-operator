@@ -139,3 +139,217 @@ func Test_anonymizeInstallConfig_BareMetal(t *testing.T) {
 	assert.NotEmpty(t, result.BareMetal.Hosts[0].BMC.Username)
 	assert.NotEmpty(t, result.BareMetal.Hosts[0].BMC.Password)
 }
+
+func Test_anonymizeFencing_EmptyCredentials(t *testing.T) {
+	fencing := &installertypes.Fencing{
+		Credentials: []*installertypes.Credential{},
+	}
+
+	anonymizeFencing(fencing)
+
+	// Verify empty credentials slice is handled
+	assert.NotNil(t, fencing)
+	assert.Len(t, fencing.Credentials, 0)
+}
+
+func Test_anonymizeFencing_WithCredentials(t *testing.T) {
+	type testCase struct {
+		name      string
+		fencing   *installertypes.Fencing
+		checkData bool
+	}
+
+	testCases := []testCase{
+		{
+			name: "Anonymize fencing credentials",
+			fencing: &installertypes.Fencing{
+				Credentials: []*installertypes.Credential{
+					{
+						HostName: "bmc1.example.com",
+						Username: "admin",
+						Password: "secretPassword123",
+						Address:  "192.168.1.100",
+					},
+				},
+			},
+			checkData: true,
+		},
+		{
+			name: "Empty credentials does not panic",
+			fencing: &installertypes.Fencing{
+				Credentials: []*installertypes.Credential{},
+			},
+		},
+	}
+
+	for _, tt := range testCases {
+		t.Run(tt.name, func(t *testing.T) {
+			anonymizeFencing(tt.fencing)
+
+			if tt.checkData {
+				// Verify first credential is anonymized
+				assert.Len(t, tt.fencing.Credentials, 1)
+				assert.Equal(t, "xxxxxxxxxxxxxxxx", tt.fencing.Credentials[0].HostName)
+				assert.Equal(t, "xxxxx", tt.fencing.Credentials[0].Username)
+				assert.Equal(t, "xxxxxxxxxxxxxxxxx", tt.fencing.Credentials[0].Password)
+				assert.Equal(t, "xxxxxxxxxxxxx", tt.fencing.Credentials[0].Address)
+			}
+		})
+	}
+}
+
+func Test_anonymizeInstallConfig_ControlPlaneFencing(t *testing.T) {
+	installConfig := &installertypes.InstallConfig{
+		ControlPlane: &installertypes.MachinePool{
+			Name: "master",
+			Fencing: &installertypes.Fencing{
+				Credentials: []*installertypes.Credential{
+					{
+						HostName: "master-bmc.example.com",
+						Username: "admin",
+						Password: "masterPassword",
+						Address:  "10.0.0.1",
+					},
+				},
+			},
+		},
+	}
+
+	result := anonymizeInstallConfig(installConfig)
+
+	// Verify ControlPlane fencing credentials are anonymized
+	assert.NotNil(t, result.ControlPlane)
+	assert.NotNil(t, result.ControlPlane.Fencing)
+	assert.Len(t, result.ControlPlane.Fencing.Credentials, 1)
+	assert.Equal(t, "xxxxxxxxxxxxxxxxxxxxxx", result.ControlPlane.Fencing.Credentials[0].HostName)
+	assert.Equal(t, "xxxxx", result.ControlPlane.Fencing.Credentials[0].Username)
+	assert.Equal(t, "xxxxxxxxxxxxxx", result.ControlPlane.Fencing.Credentials[0].Password)
+	assert.Equal(t, "xxxxxxxx", result.ControlPlane.Fencing.Credentials[0].Address)
+}
+
+func Test_anonymizeInstallConfig_ArbiterFencing(t *testing.T) {
+	installConfig := &installertypes.InstallConfig{
+		Arbiter: &installertypes.MachinePool{
+			Name: "arbiter",
+			Fencing: &installertypes.Fencing{
+				Credentials: []*installertypes.Credential{
+					{
+						HostName: "arbiter-bmc.example.com",
+						Username: "arbiter-admin",
+						Password: "arbiterPassword",
+						Address:  "10.0.0.2",
+					},
+				},
+			},
+		},
+	}
+
+	result := anonymizeInstallConfig(installConfig)
+
+	// Verify Arbiter fencing credentials are anonymized
+	assert.NotNil(t, result.Arbiter)
+	assert.NotNil(t, result.Arbiter.Fencing)
+	assert.Len(t, result.Arbiter.Fencing.Credentials, 1)
+	assert.Equal(t, "xxxxxxxxxxxxxxxxxxxxxxx", result.Arbiter.Fencing.Credentials[0].HostName)
+	assert.Equal(t, "xxxxxxxxxxxxx", result.Arbiter.Fencing.Credentials[0].Username)
+	assert.Equal(t, "xxxxxxxxxxxxxxx", result.Arbiter.Fencing.Credentials[0].Password)
+	assert.Equal(t, "xxxxxxxx", result.Arbiter.Fencing.Credentials[0].Address)
+}
+
+func Test_anonymizeInstallConfig_ComputeFencing(t *testing.T) {
+	installConfig := &installertypes.InstallConfig{
+		Compute: []installertypes.MachinePool{
+			{
+				Name: "worker",
+				Fencing: &installertypes.Fencing{
+					Credentials: []*installertypes.Credential{
+						{
+							HostName: "worker1-bmc.example.com",
+							Username: "worker-admin",
+							Password: "workerPassword1",
+							Address:  "10.0.0.10",
+						},
+					},
+				},
+			},
+			{
+				Name: "worker",
+				Fencing: &installertypes.Fencing{
+					Credentials: []*installertypes.Credential{},
+				},
+			},
+		},
+	}
+
+	result := anonymizeInstallConfig(installConfig)
+
+	// Verify first compute node fencing credentials are anonymized
+	assert.Len(t, result.Compute, 2)
+	assert.NotNil(t, result.Compute[0].Fencing)
+	assert.Len(t, result.Compute[0].Fencing.Credentials, 1)
+	assert.Equal(t, "xxxxxxxxxxxxxxxxxxxxxxx", result.Compute[0].Fencing.Credentials[0].HostName)
+	assert.Equal(t, "xxxxxxxxxxxx", result.Compute[0].Fencing.Credentials[0].Username)
+	assert.Equal(t, "xxxxxxxxxxxxxxx", result.Compute[0].Fencing.Credentials[0].Password)
+	assert.Equal(t, "xxxxxxxxx", result.Compute[0].Fencing.Credentials[0].Address)
+}
+
+func Test_anonymizeInstallConfig_MultipleMachinePoolsWithFencing(t *testing.T) {
+	installConfig := &installertypes.InstallConfig{
+		ControlPlane: &installertypes.MachinePool{
+			Name: "master",
+			Fencing: &installertypes.Fencing{
+				Credentials: []*installertypes.Credential{
+					{
+						HostName: "master-bmc.example.com",
+						Username: "master-admin",
+						Password: "masterPass",
+						Address:  "10.0.0.1",
+					},
+				},
+			},
+		},
+		Arbiter: &installertypes.MachinePool{
+			Name: "arbiter",
+			Fencing: &installertypes.Fencing{
+				Credentials: []*installertypes.Credential{
+					{
+						HostName: "arbiter-bmc.example.com",
+						Username: "arbiter-admin",
+						Password: "arbiterPass",
+						Address:  "10.0.0.2",
+					},
+				},
+			},
+		},
+		Compute: []installertypes.MachinePool{
+			{
+				Name: "worker",
+				Fencing: &installertypes.Fencing{
+					Credentials: []*installertypes.Credential{
+						{
+							HostName: "worker-bmc.example.com",
+							Username: "worker-admin",
+							Password: "workerPass",
+							Address:  "10.0.0.10",
+						},
+					},
+				},
+			},
+		},
+	}
+
+	result := anonymizeInstallConfig(installConfig)
+
+	// Verify all machine pools have anonymized fencing credentials
+	assert.NotNil(t, result.ControlPlane)
+	assert.NotNil(t, result.ControlPlane.Fencing)
+	assert.Equal(t, "xxxxxxxxxxxxxxxxxxxxxx", result.ControlPlane.Fencing.Credentials[0].HostName)
+
+	assert.NotNil(t, result.Arbiter)
+	assert.NotNil(t, result.Arbiter.Fencing)
+	assert.Equal(t, "xxxxxxxxxxxxxxxxxxxxxxx", result.Arbiter.Fencing.Credentials[0].HostName)
+
+	assert.Len(t, result.Compute, 1)
+	assert.NotNil(t, result.Compute[0].Fencing)
+	assert.Equal(t, "xxxxxxxxxxxxxxxxxxxxxx", result.Compute[0].Fencing.Credentials[0].HostName)
+}
