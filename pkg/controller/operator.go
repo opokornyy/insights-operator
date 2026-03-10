@@ -35,6 +35,7 @@ import (
 	"github.com/openshift/insights-operator/pkg/config"
 	"github.com/openshift/insights-operator/pkg/config/configobserver"
 	"github.com/openshift/insights-operator/pkg/controller/periodic"
+	"github.com/openshift/insights-operator/pkg/controller/runtimeextractor"
 	"github.com/openshift/insights-operator/pkg/controller/status"
 	"github.com/openshift/insights-operator/pkg/gather"
 	"github.com/openshift/insights-operator/pkg/insights"
@@ -126,6 +127,27 @@ func (s *Operator) Run(ctx context.Context, controller *controllercmd.Controller
 		desiredVersion = envVersion
 	}
 
+	kubeInf := v1helpers.NewKubeInformersForNamespaces(kubeClient, "openshift-insights")
+	configMapObserver, err := configobserver.NewConfigMapObserver(ctx, gatherKubeConfig, controller.EventRecorder, kubeInf)
+	if err != nil {
+		return err
+	}
+	go kubeInf.Start(ctx.Done())
+	go configMapObserver.Run(ctx, 1)
+
+	// secretConfigObserver synthesizes all config into the status reporter controller
+	secretConfigObserver := configobserver.New(s.Controller, kubeClient)
+	go secretConfigObserver.Start(ctx)
+
+	configAggregator := configobserver.NewConfigAggregator(secretConfigObserver, configMapObserver)
+	go configAggregator.Listen(ctx)
+
+	// Start runtimeExtractor controller
+	runtimeExtractorCtrl := runtimeextractor.NewRuntimeExtractorController(
+		configAggregator,
+	)
+	go runtimeExtractorCtrl.Run(ctx)
+
 	// By default, this will exit(0) the process if the featuregates ever change to a different set of values.
 	featureGateAccessor := featuregates.NewFeatureGateAccess(
 		desiredVersion, missingVersion,
@@ -177,21 +199,6 @@ func (s *Operator) Run(ctx context.Context, controller *controllercmd.Controller
 			return fmt.Errorf("failed to create TechPreview informers: %w", err)
 		}
 	}
-
-	kubeInf := v1helpers.NewKubeInformersForNamespaces(kubeClient, "openshift-insights")
-	configMapObserver, err := configobserver.NewConfigMapObserver(ctx, gatherKubeConfig, controller.EventRecorder, kubeInf)
-	if err != nil {
-		return err
-	}
-	go kubeInf.Start(ctx.Done())
-	go configMapObserver.Run(ctx, 1)
-
-	// secretConfigObserver synthesizes all config into the status reporter controller
-	secretConfigObserver := configobserver.New(s.Controller, kubeClient)
-	go secretConfigObserver.Start(ctx)
-
-	configAggregator := configobserver.NewConfigAggregator(secretConfigObserver, configMapObserver)
-	go configAggregator.Listen(ctx)
 
 	// additional configurations may exist besides the default one
 	if customPath := getCustomStoragePath(configAggregator, nil); customPath != "" {
