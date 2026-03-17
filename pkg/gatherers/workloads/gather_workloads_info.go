@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
+	"errors"
 	"fmt"
 	"hash"
 	"os"
@@ -13,8 +14,7 @@ import (
 
 	kerrors "k8s.io/apimachinery/pkg/api/errors"
 
-	"errors"
-
+	configv1client "github.com/openshift/client-go/config/clientset/versioned"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 	"k8s.io/client-go/kubernetes"
@@ -81,6 +81,11 @@ func (g *Gatherer) GatherWorkloadInfo(ctx context.Context) ([]record.Record, []e
 		return nil, []error{err}
 	}
 
+	configClient, err := configv1client.NewForConfig(g.gatherKubeConfig)
+	if err != nil {
+		return nil, []error{err}
+	}
+
 	imageConfig := rest.CopyConfig(g.gatherProtoKubeConfig)
 	imageConfig.QPS = common.ImageConfigQPS
 	imageConfig.Burst = common.ImageConfigBurst
@@ -90,17 +95,18 @@ func (g *Gatherer) GatherWorkloadInfo(ctx context.Context) ([]record.Record, []e
 		return nil, []error{err}
 	}
 
-	return gatherWorkloadInfo(ctx, gatherKubeClient.CoreV1(), gatherOpenShiftClient)
+	return gatherWorkloadInfo(ctx, gatherKubeClient.CoreV1(), gatherOpenShiftClient, configClient)
 }
 
 func gatherWorkloadInfo(
 	ctx context.Context,
 	coreClient corev1client.CoreV1Interface,
 	imageClient imageclient.ImageV1Interface,
+	configClient configv1client.Interface,
 ) ([]record.Record, []error) {
-	var errs = []error{}
+	errs := []error{}
 
-	workloadInfos, runtimeInfoErrs := gatherWorkloadRuntimeInfos(ctx, coreClient)
+	workloadInfos, runtimeInfoErrs := gatherWorkloadRuntimeInfos(ctx, coreClient, configClient)
 	errs = append(errs, runtimeInfoErrs...)
 
 	imageCh, imagesDoneCh := gatherWorkloadImageInfo(ctx, imageClient.Images())

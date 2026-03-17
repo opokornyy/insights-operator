@@ -2,7 +2,6 @@ package workloads
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -13,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	configv1client "github.com/openshift/client-go/config/clientset/versioned"
 	"github.com/openshift/insights-operator/pkg/insights/insightsclient"
 	corev1 "k8s.io/api/core/v1"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
@@ -29,6 +29,7 @@ type podWithNodeName struct {
 func gatherWorkloadRuntimeInfos(
 	ctx context.Context,
 	coreClient corev1client.CoreV1Interface,
+	configClient configv1client.Interface,
 ) (workloadRuntimes, []error) {
 	start := time.Now()
 
@@ -38,7 +39,7 @@ func gatherWorkloadRuntimeInfos(
 	}
 
 	workloadRuntimeInfos := make(workloadRuntimes)
-	var errors = []error{}
+	errors := []error{}
 
 	nodeWorkloadCh := make(chan workloadRuntimesResult)
 	var receiveWg sync.WaitGroup
@@ -63,7 +64,7 @@ func gatherWorkloadRuntimeInfos(
 			klog.Infof("Gathering workload runtime info for node %s...\n", podInfo.nodeName)
 			hostPort := net.JoinHostPort(podInfo.podIP, "8443")
 			extractorURL := fmt.Sprintf("https://%s/gather_runtime_info", hostPort)
-			httpCli, err := createHTTPClient()
+			httpCli, err := createHTTPClient(configClient)
 			if err != nil {
 				klog.Errorf("Failed to initialize the HTTP client: %v", err)
 				return
@@ -135,23 +136,36 @@ type workloadRuntimesResult struct {
 	Error            error
 }
 
-func createHTTPClient() (*http.Client, error) {
+func createHTTPClient(configClient configv1client.Interface) (*http.Client, error) {
 	// Use the certificate authority from the service to verify the TLS connection to the insights-runtime-extractor
 	const rootCAFile = "/var/run/configmaps/service-ca-bundle/service-ca.crt"
+
+	// getTlsConfig
+	tlsConfig, err := insightsclient.GetTLSConfigFromAPIServer(configClient)
+	if err != nil {
+		fmt.Errorf("getTLSConfigFromAPIServer: %v", err)
+	}
+
+	tlsConfig.ServerName = "exporter.openshift-insights.svc.cluster.local"
 
 	caCertPool, err := certutil.NewPool(rootCAFile)
 	if err != nil {
 		return nil, err
 	}
 
+	if caCertPool != nil {
+		tlsConfig.RootCAs = caCertPool
+	}
+
 	authClient := &http.Client{
 		Transport: &http.Transport{
-			TLSClientConfig: &tls.Config{
-				InsecureSkipVerify: false,
-				RootCAs:            caCertPool,
-				ServerName:         "exporter.openshift-insights.svc.cluster.local",
-				MinVersion:         tls.VersionTLS12,
-			},
+			TLSClientConfig: tlsConfig,
+			// TLSClientConfig: &tls.Config{
+			// 	InsecureSkipVerify: false,
+			// 	RootCAs:            caCertPool,
+			// 	ServerName:         "exporter.openshift-insights.svc.cluster.local",
+			// 	MinVersion:         tls.VersionTLS12,
+			// },
 		},
 	}
 	return authClient, nil
