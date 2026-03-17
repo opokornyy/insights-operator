@@ -1,0 +1,41 @@
+issue:
+  title: "GatherDVOMetrics doesn't read dataPolicy from CRs"
+
+  problem: |
+    GatherDVOMetrics only reads obfuscation config from ConfigMap/Secret,
+    but ignores dataPolicy from InsightsDataGather CR and DataGather CR.
+
+  current_code:
+    file: "pkg/gatherers/clusterconfig/gather_dvo_metrics.go"
+    line: 71
+    code: "obfuscation := g.config().DataReporting.Obfuscation"
+    reads_from: "ConfigMap/Secret only"
+
+  why_it_matters:
+    - WorkloadNames obfuscation is handled in the gatherer (not anonymizer)
+    - Gatherer strips namespace/deployment names from DVO metrics
+    - Only gatherer code can check this config, anonymizer doesn't help
+
+  what_works:
+    scenario: "Periodic gathering (InsightsConfig disabled)"
+    config: "ConfigMap or Secret"
+    result: "✓ Works"
+
+  what_fails:
+    - scenario: "Periodic gathering (InsightsConfig enabled)"
+      config: "InsightsDataGather CR → spec.gatherConfig.dataPolicy"
+      result: "✗ Ignored by gatherer"
+
+    - scenario: "On-demand gathering"
+      config: "DataGather CR → spec.dataPolicy"
+      result: "✗ Ignored by gatherer"
+
+  root_cause:
+    - Gatherer only has configAggregator (ConfigMap/Secret)
+    - No access to InsightsDataGather or DataGather CR
+    - dataPolicy from CRs only passed to anonymizer, not gatherers
+
+  needs_fix:
+    - Make gatherer read dataPolicy from InsightsDataGather CR (periodic)
+    - Make gatherer read dataPolicy from DataGather CR (on-demand)
+    - Maintain ConfigMap precedence for backward compatibility
